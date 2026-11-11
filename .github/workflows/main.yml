@@ -28,15 +28,19 @@ jobs:
             DIR="."
           else
             ZIP=$(ls *.zip 2>/dev/null | head -n1 || true)
-            if [ -z "$ZIP" ]; then
-              echo "No pubspec.yaml and no .zip file found in repo root"; ls -la; exit 1
+            if [ -n "$ZIP" ]; then
+              unzip -q -o "$ZIP" -d _src
+              P=$(find _src -name pubspec.yaml -not -path '*/.*' | head -n1)
+            else
+              P=$(find . -maxdepth 3 -name pubspec.yaml -not -path '*/.*' | head -n1)
             fi
-            unzip -q -o "$ZIP" -d _src
-            P=$(find _src -name pubspec.yaml -not -path '*/.*' | head -n1)
-            if [ -z "$P" ]; then echo "pubspec.yaml not found inside zip"; exit 1; fi
+            if [ -z "$P" ]; then echo "pubspec.yaml not found (root, subfolder or zip)"; ls -la; exit 1; fi
             DIR=$(dirname "$P")
           fi
+          VER=$(grep -m1 '^version:' "$DIR/pubspec.yaml" | sed 's/version:[[:space:]]*//; s/+.*//' | tr -d '\r ')
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          echo "Project dir: $DIR | version: $VER"
           ls -la "$DIR" "$DIR/lib" "$DIR/assets"
 
       - uses: actions/setup-java@v4
@@ -70,7 +74,7 @@ jobs:
         working-directory: ${{ steps.prep.outputs.dir }}
         run: |
           if [ -f android/app/build.gradle.kts ]; then
-            cat >> android/app/build.gradle.kts <<'EOF'
+            cat >> android/app/build.gradle.kts <<'EOF2'
 
           android {
               compileOptions {
@@ -81,10 +85,10 @@ jobs:
           dependencies {
               coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
           }
-          EOF
+          EOF2
             cat android/app/build.gradle.kts
           else
-            cat >> android/app/build.gradle <<'EOF'
+            cat >> android/app/build.gradle <<'EOF2'
 
           android {
               compileOptions {
@@ -95,7 +99,7 @@ jobs:
           dependencies {
               coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4"
           }
-          EOF
+          EOF2
             cat android/app/build.gradle
           fi
 
@@ -113,28 +117,28 @@ jobs:
 
       - name: Build universal APK
         working-directory: ${{ steps.prep.outputs.dir }}
-        run: flutter build apk --release
+        run: |
+          flutter build apk --release
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-release.apk "dist/Stud-${{ steps.prep.outputs.ver }}-universal.apk"
 
       - name: Build split APKs
         working-directory: ${{ steps.prep.outputs.dir }}
-        run: flutter build apk --release --split-per-abi
-
-      - name: Rename outputs
-        working-directory: ${{ steps.prep.outputs.dir }}/build/app/outputs/flutter-apk
         run: |
-          mv app-release.apk Stud-universal.apk
-          mv app-arm64-v8a-release.apk Stud-arm64-v8a.apk
-          mv app-armeabi-v7a-release.apk Stud-armeabi-v7a.apk
-          mv app-x86_64-release.apk Stud-x86_64.apk
+          flutter build apk --release --split-per-abi
+          for A in arm64-v8a armeabi-v7a x86_64; do
+            cp "build/app/outputs/flutter-apk/app-$A-release.apk" "dist/Stud-${{ steps.prep.outputs.ver }}-$A.apk"
+          done
+          ls -la dist
 
       - uses: actions/upload-artifact@v4
         with:
-          name: stud-apk
-          path: ${{ steps.prep.outputs.dir }}/build/app/outputs/flutter-apk/Stud-*.apk
+          name: stud-apk-${{ steps.prep.outputs.ver }}
+          path: ${{ steps.prep.outputs.dir }}/dist/Stud-*.apk
           retention-days: 30
 
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ github.run_number }}
-          name: Stud build ${{ github.run_number }}
-          files: ${{ steps.prep.outputs.dir }}/build/app/outputs/flutter-apk/Stud-*.apk
+          tag_name: v${{ steps.prep.outputs.ver }}-build-${{ github.run_number }}
+          name: Stud ${{ steps.prep.outputs.ver }} (build ${{ github.run_number }})
+          files: ${{ steps.prep.outputs.dir }}/dist/Stud-*.apk
